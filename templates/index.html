@@ -1,0 +1,145 @@
+from flask import Flask, request, jsonify, render_template
+import sqlite3
+import os
+import configparser
+from datetime import datetime, timedelta
+
+app = Flask(name)
+
+DB_FILE = "camping.db"
+CONFIG_FILE = "camping.cfg"
+
+def get_db_connection():
+conn = sqlite3.connect(DB_FILE)
+conn.row_factory = sqlite3.Row
+return conn
+
+def init_db():
+conn = get_db_connection()
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS bookings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    pitch_name TEXT NOT NULL,
+    arrival DATE NOT NULL,
+    departure DATE NOT NULL
+)
+""")
+
+conn.commit()
+conn.close()
+
+def validate_booking(data):
+required_fields = ["name", "pitch_name", "arrival", "departure"]
+
+for field in required_fields:
+    if field not in data or not str(data[field]).strip():
+        return False, f"Feld fehlt: {field}"
+
+try:
+    arrival = datetime.strptime(data["arrival"], "%Y-%m-%d")
+    departure = datetime.strptime(data["departure"], "%Y-%m-%d")
+
+    if departure <= arrival:
+        return False, "Abreise muss nach Anreise liegen"
+
+except:
+    return False, "Datum falsch (Format: YYYY-MM-DD)"
+
+return True, None
+
+def generate_days(bookings):
+today = datetime.today().date()
+days = []
+
+for i in range(14):
+    day_date = today + timedelta(days=i)
+
+    day_bookings = []
+
+    for b in bookings:
+        arrival = datetime.strptime(b["arrival"], "%Y-%m-%d").date()
+        departure = datetime.strptime(b["departure"], "%Y-%m-%d").date()
+
+        if arrival <= day_date < departure:
+            day_bookings.append({
+                "id": b["id"],
+                "name": b["name"],
+                "pitch_name": b["pitch_name"]
+            })
+
+    days.append({
+        "date": day_date.strftime("%d.%m.%Y"),
+        "bookings": day_bookings
+    })
+
+return days
+
+@app.errorhandler(Exception)
+def handle_error(e):
+return jsonify({
+"status": "error",
+"message": str(e)
+}), 500
+
+@app.route("/")
+def index():
+return render_template("index.html")
+
+@app.route("/api/bookings", methods=["GET"])
+def get_bookings():
+conn = get_db_connection()
+cursor = conn.cursor()
+
+rows = cursor.execute("SELECT * FROM bookings").fetchall()
+conn.close()
+
+bookings = []
+
+for row in rows:
+    bookings.append({
+        "id": row["id"],
+        "name": row["name"],
+        "pitch_name": row["pitch_name"],
+        "arrival": row["arrival"],
+        "departure": row["departure"]
+    })
+
+days = generate_days(bookings)
+
+return jsonify(days)
+
+@app.route("/api/bookings", methods=["POST"])
+def create_booking():
+data = request.get_json()
+
+valid, error = validate_booking(data)
+if not valid:
+    return jsonify({
+        "status": "error",
+        "message": error
+    }), 400
+
+conn = get_db_connection()
+cursor = conn.cursor()
+
+cursor.execute("""
+    INSERT INTO bookings (name, pitch_name, arrival, departure)
+    VALUES (?, ?, ?, ?)
+""", (
+    data["name"],
+    data["pitch_name"],
+    data["arrival"],
+    data["departure"]
+))
+
+conn.commit()
+conn.close()
+
+return jsonify({"status": "success"})
+
+if name == "main":
+init_db()
+app.run(debug=False)
